@@ -1,5 +1,9 @@
 > [!NOTE]
 > DISCLAIMER: the conversion parts were AI generated
+
+> [!IMPORTANT]
+> made for and tested on Aseprite **1.3.17.2**
+
 # Features
 - OkHsl color format
 
@@ -20,4 +24,6 @@ side-by-side comparison of desaturation using the Hue/Saturation filter:
 #### Desaturated by OkHsl
 ![Example OkHsl](images/example_okhsl.png "OkHsl example")
 
-credit: [Terra x2 by Vagrant](https://pixeljoint.com/pixelart/139311.htm)
+# Credits
+- aseprite: [repo](https://github.com/aseprite/aseprite)
+- example: [Terra x2 by Vagrant](https://pixeljoint.com/pixelart/139311.htm)
