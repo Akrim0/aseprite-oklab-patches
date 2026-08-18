@@ -1,0 +1,1347 @@
+diff --git a/data/gui.xml b/data/gui.xml
+index 66fca6230f..4553ef74f4 100644
+--- a/data/gui.xml
++++ b/data/gui.xml
+@@ -1260,6 +1260,9 @@
+       <item command="SetColorSelector" text="@.rgb_color_wheel">
+         <param name="type" value="rgb-wheel" />
+       </item>
++      <item command="SetColorSelector" text="@.oklab_color_wheel">
++        <param name="type" value="oklab-wheel" />
++      </item>
+       <item command="SetColorSelector" text="@.ryb_color_wheel">
+         <param name="type" value="ryb-wheel" />
+       </item>
+diff --git a/data/pref.xml b/data/pref.xml
+index ad4a280bc6..eb07d5979e 100644
+--- a/data/pref.xml
++++ b/data/pref.xml
+@@ -62,9 +62,11 @@
+       <value id="HSV" value="6" />
+       <value id="HSLA" value="7" />
+       <value id="HSL" value="8" />
+-      <value id="GRAYA" value="9" />
+-      <value id="GRAY" value="10" />
+-      <value id="INDEX" value="11" />
++      <value id="OKHSLA" value="9" />
++      <value id="OKHSL" value="10" />
++      <value id="GRAYA" value="11" />
++      <value id="GRAY" value="12" />
++      <value id="INDEX" value="13" />
+     </enum>
+     <enum id="EyedropperSample">
+       <value id="ALL_LAYERS" value="0" />
+diff --git a/data/strings/en.ini b/data/strings/en.ini
+index c03236493e..fac859167e 100644
+--- a/data/strings/en.ini
++++ b/data/strings/en.ini
+@@ -435,6 +435,7 @@
+ SetColorSelector_TintShadeTone = Color Tint/Shade/Tone
+ SetColorSelector_RGBWheel = RGB Color Wheel
+ SetColorSelector_RYBWheel = RYB Color Wheel
++SetColorSelector_OKLABWheel = OkLab Color Wheel
+ SetColorSelector_NormalMapWheel = Normal Map Color Wheel
+ SetInkType = Set Ink Type: {0}
+ SetLoopSection = Set Loop Section
+@@ -1692,6 +1693,7 @@
+ color_tint_shade_tone = Color Tint/Shade/Tone
+ color_spectrum = Color Spectrum
+ rgb_color_wheel = RGB Color Wheel
++oklab_color_wheel = OkLab Color Wheel
+ ryb_color_wheel = RYB Color Wheel
+ normal_map_color_wheel = Normal Map Color Wheel
+ load_palette = L&oad Palette
+diff --git a/src/app/color.cpp b/src/app/color.cpp
+index 205f87e562..6c06f36bf2 100644
+--- a/src/app/color.cpp
++++ b/src/app/color.cpp
+@@ -20,6 +20,7 @@
+ #include "doc/tile.h"
+ #include "gfx/hsl.h"
+ #include "gfx/hsv.h"
++#include "gfx/okhsl.h"
+ #include "gfx/rgb.h"
+ 
+ #include <cmath>
+@@ -62,6 +63,17 @@
+ }
+ 
+ // static
++Color Color::fromOkHsl(double h, double s, double l, int a)
++{
++  Color color(Color::OkHslType);
++  color.m_value.okhsl.h = h;
++  color.m_value.okhsl.s = s;
++  color.m_value.okhsl.l = l;
++  color.m_value.okhsl.a = a;
++  return color;
++}
++
++// static
+ Color Color::fromHsl(double h, double s, double l, int a)
+ {
+   Color color(Color::HslType);
+@@ -141,7 +153,7 @@
+ 
+   if (str != "mask") {
+     if (str.find("rgb{") == 0 || str.find("hsv{") == 0 || str.find("hsl{") == 0 ||
+-        str.find("gray{") == 0) {
++        str.find("okhsl{") == 0 || str.find("gray{") == 0) {
+       int c = 0;
+       double table[4] = { 0.0, 0.0, 0.0, 255.0 };
+       std::string::size_type i = str.find_first_of('{') + 1, j;
+@@ -161,6 +173,8 @@
+         color = Color::fromHsv(table[0], table[1] / 100.0, table[2] / 100.0, int(table[3]));
+       else if (str[0] == 'h' && str[1] == 's' && str[2] == 'l')
+         color = Color::fromHsl(table[0], table[1] / 100.0, table[2] / 100.0, int(table[3]));
++      else if (str[0] == 'o' && str[1] == 'k' && str[2] == 'h' && str[3] == 's' && str[4] == 'l' )
++        color = Color::fromOkHsl(table[0], table[1] / 100.0, table[2] / 100.0, int(table[3]));
+       else if (str[0] == 'g')
+         color = Color::fromGray(int(table[0]), (c >= 2 ? int(table[1]) : 255));
+     }
+@@ -201,6 +215,12 @@
+              << std::clamp(m_value.hsl.l * 100.0, 0.0, 100.0) << "," << m_value.hsl.a << "}";
+       break;
+ 
++    case Color::OkHslType:
++      result << "okhsl{" << std::setprecision(2) << std::fixed << m_value.okhsl.h << ","
++             << std::clamp(m_value.okhsl.s * 100.0, 0.0, 100.0) << ","
++             << std::clamp(m_value.okhsl.l * 100.0, 0.0, 100.0) << "," << m_value.okhsl.a << "}";
++      break;
++
+     case Color::GrayType:
+       result << "gray{" << m_value.gray.g << "," << m_value.gray.a << "}";
+       break;
+@@ -264,6 +284,22 @@
+         }
+         break;
+ 
++      case Color::OkHslType:
++        if (pixelFormat == IMAGE_GRAYSCALE) {
++          result << "Gray " << getGray();
++        }
++        else {
++          result << "OKHSL " << int(m_value.okhsl.h) << "\xc2\xb0 "
++                 << std::clamp(int(m_value.okhsl.s * 100.0), 0, 100) << "% "
++                 << std::clamp(int(m_value.okhsl.l * 100.0), 0, 100) << "%";
++
++          if (pixelFormat == IMAGE_INDEXED)
++            result << " Index " << color_utils::color_for_image(*this, IMAGE_INDEXED);
++
++          result << " (RGB " << getRed() << " " << getGreen() << " " << getBlue() << ")";
++        }
++        break;
++
+       case Color::GrayType:  result << "Gray " << m_value.gray.g; break;
+ 
+       case Color::IndexType: {
+@@ -321,6 +357,17 @@
+         }
+         break;
+ 
++      case Color::OkHslType:
++        if (pixelFormat == IMAGE_GRAYSCALE) {
++          result << "Gry-" << getGray();
++        }
++        else {
++          result << int(m_value.okhsl.h) << "\xc2\xb0"
++                 << std::clamp(int(m_value.okhsl.s * 100.0), 0, 100) << ","
++                 << std::clamp(int(m_value.okhsl.l * 100.0), 0, 100);
++        }
++        break;
++
+       case Color::GrayType:  result << "Gry-" << m_value.gray.g; break;
+ 
+       case Color::IndexType: result << "Idx-" << m_value.index; break;
+@@ -356,6 +403,12 @@
+              (std::fabs(m_value.hsl.l - other.m_value.hsl.l) < 0.00001) &&
+              (m_value.hsl.a == other.m_value.hsl.a);
+ 
++    case Color::OkHslType:
++      return (std::fabs(m_value.okhsl.h - other.m_value.okhsl.h) < 0.001) &&
++             (std::fabs(m_value.okhsl.s - other.m_value.okhsl.s) < 0.00001) &&
++             (std::fabs(m_value.okhsl.l - other.m_value.okhsl.l) < 0.00001) &&
++             (m_value.okhsl.a == other.m_value.okhsl.a);
++
+     case Color::GrayType:
+       return m_value.gray.g == other.m_value.gray.g && m_value.gray.a == other.m_value.gray.a;
+ 
+@@ -390,6 +443,8 @@
+ 
+     case Color::HslType:   return Rgb(Hsl(m_value.hsl.h, m_value.hsl.s, m_value.hsl.l)).red();
+ 
++    case Color::OkHslType: return Rgb(OkHsl(m_value.okhsl.h, m_value.okhsl.s, m_value.okhsl.l)).red();
++
+     case Color::GrayType:  return m_value.gray.g;
+ 
+     case Color::IndexType: {
+@@ -416,6 +471,8 @@
+ 
+     case Color::HslType:   return Rgb(Hsl(m_value.hsl.h, m_value.hsl.s, m_value.hsl.l)).green();
+ 
++    case Color::OkHslType: return Rgb(OkHsl(m_value.okhsl.h, m_value.okhsl.s, m_value.okhsl.l)).green();
++
+     case Color::GrayType:  return m_value.gray.g;
+ 
+     case Color::IndexType: {
+@@ -442,6 +499,8 @@
+ 
+     case Color::HslType:   return Rgb(Hsl(m_value.hsl.h, m_value.hsl.s, m_value.hsl.l)).blue();
+ 
++    case Color::OkHslType: return Rgb(OkHsl(m_value.okhsl.h, m_value.okhsl.s, m_value.okhsl.l)).blue();
++
+     case Color::GrayType:  return m_value.gray.g;
+ 
+     case Color::IndexType: {
+@@ -468,6 +527,8 @@
+ 
+     case Color::HslType:   return m_value.hsl.h;
+ 
++    case Color::OkHslType: return Hsv(Rgb(getRed(), getGreen(), getBlue())).hue();
++
+     case Color::GrayType:  return 0.0;
+ 
+     case Color::IndexType: {
+@@ -496,6 +557,8 @@
+ 
+     case Color::HslType:   return Hsv(Rgb(getRed(), getGreen(), getBlue())).saturation();
+ 
++    case Color::OkHslType: return Hsv(Rgb(getRed(), getGreen(), getBlue())).saturation();
++
+     case Color::GrayType:  return 0;
+ 
+     case Color::IndexType: {
+@@ -524,6 +587,8 @@
+ 
+     case Color::HslType:   return Hsv(Rgb(getRed(), getGreen(), getBlue())).value();
+ 
++    case Color::OkHslType: return Hsv(Rgb(getRed(), getGreen(), getBlue())).value();
++
+     case Color::GrayType:  return m_value.gray.g / 255.0;
+ 
+     case Color::IndexType: {
+@@ -552,6 +617,8 @@
+ 
+     case Color::HslType:   return m_value.hsl.h;
+ 
++    case Color::OkHslType: return Hsl(Rgb(getRed(), getGreen(), getBlue())).hue();
++
+     case Color::GrayType:  return 0.0;
+ 
+     case Color::IndexType: {
+@@ -580,6 +647,8 @@
+ 
+     case Color::HslType:   return m_value.hsl.s;
+ 
++    case Color::OkHslType: return Hsl(Rgb(getRed(), getGreen(), getBlue())).saturation();
++
+     case Color::GrayType:  return 0;
+ 
+     case Color::IndexType: {
+@@ -608,6 +677,8 @@
+ 
+     case Color::HslType:   return m_value.hsl.l;
+ 
++    case Color::OkHslType: return Hsl(Rgb(getRed(), getGreen(), getBlue())).lightness();
++
+     case Color::GrayType:  return m_value.gray.g / 255.0;
+ 
+     case Color::IndexType: {
+@@ -625,6 +696,97 @@
+   return -1.0;
+ }
+ 
++double Color::getOkHslHue() const 
++{
++
++  switch (getType()) {
++    case Color::MaskType:  return 0.0;
++
++    case Color::RgbType:   return OkHsl(Rgb(m_value.rgb.r, m_value.rgb.g, m_value.rgb.b)).hue();
++
++    case Color::HsvType:   return OkHsl(Rgb(getRed(), getGreen(), getBlue())).hue();
++
++    case Color::HslType:   return OkHsl(Rgb(getRed(), getGreen(), getBlue())).hue();
++
++    case Color::OkHslType: return m_value.okhsl.h;
++
++    case Color::GrayType:  return 0.0;
++
++    case Color::IndexType: {
++      int i = m_value.index;
++      if (i >= 0 && i < get_current_palette()->size()) {
++        uint32_t c = get_current_palette()->getEntry(i);
++        return OkHsl(Rgb(rgba_getr(c), rgba_getg(c), rgba_getb(c))).hue();
++      }
++      else
++        return 0.0;
++    }
++  }
++
++  ASSERT(false);
++  return -1.0;
++}
++
++double Color::getOkHslSaturation() const
++{
++  switch (getType()) {
++    case Color::MaskType:  return 0;
++
++    case Color::RgbType:   return OkHsl(Rgb(m_value.rgb.r, m_value.rgb.g, m_value.rgb.b)).saturation();
++
++    case Color::HsvType:   return OkHsl(Rgb(getRed(), getGreen(), getBlue())).saturation();
++
++    case Color::HslType:   return OkHsl(Rgb(getRed(), getGreen(), getBlue())).saturation();
++
++    case Color::OkHslType: return m_value.okhsl.s;
++
++    case Color::GrayType:  return 0;
++
++    case Color::IndexType: {
++      int i = m_value.index;
++      if (i >= 0 && i < get_current_palette()->size()) {
++        uint32_t c = get_current_palette()->getEntry(i);
++        return OkHsl(Rgb(rgba_getr(c), rgba_getg(c), rgba_getb(c))).saturation();
++      }
++      else
++        return 0.0;
++    }
++  }
++
++  ASSERT(false);
++  return -1.0;
++}
++
++double Color::getOkHslLightness() const
++{
++  switch (getType()) {
++    case Color::MaskType:  return 0.0;
++
++    case Color::RgbType:   return OkHsl(Rgb(m_value.rgb.r, m_value.rgb.g, m_value.rgb.b)).lightness();
++
++    case Color::HsvType:   return OkHsl(Rgb(getRed(), getGreen(), getBlue())).lightness();
++
++    case Color::HslType:   return OkHsl(Rgb(getRed(), getGreen(), getBlue())).lightness();
++
++    case Color::OkHslType: return m_value.okhsl.l;
++
++    case Color::GrayType:  return m_value.gray.g / 255.0;
++
++    case Color::IndexType: {
++      int i = m_value.index;
++      if (i >= 0 && i < get_current_palette()->size()) {
++        uint32_t c = get_current_palette()->getEntry(i);
++        return OkHsl(Rgb(rgba_getr(c), rgba_getg(c), rgba_getb(c))).lightness();
++      }
++      else
++        return 0.0;
++    }
++  }
++
++  ASSERT(false);
++  return -1.0;
++}
++
+ int Color::getGray() const
+ {
+   switch (getType()) {
+@@ -637,6 +799,8 @@
+ 
+     case Color::HslType:   return int(255.0 * m_value.hsl.l);
+ 
++    case Color::OkHslType: return int(255.0 * Hsl(Rgb(getRed(), getGreen(), getBlue())).lightness());
++
+     case Color::GrayType:  return m_value.gray.g;
+ 
+     case Color::IndexType: {
+@@ -662,6 +826,7 @@
+     case Color::RgbType:
+     case Color::HsvType:
+     case Color::HslType:
++    case Color::OkHslType:
+     case Color::GrayType: {
+       int i =
+         get_current_palette()->findExactMatch(getRed(), getGreen(), getBlue(), getAlpha(), -1);
+@@ -703,6 +868,8 @@
+ 
+     case Color::HslType:   return m_value.hsl.a;
+ 
++    case Color::OkHslType: return m_value.okhsl.a;
++
+     case Color::GrayType:  return m_value.gray.a;
+ 
+     case Color::IndexType: {
+@@ -733,6 +900,8 @@
+ 
+     case Color::HslType:   m_value.hsl.a = alpha; break;
+ 
++    case Color::OkHslType: m_value.okhsl.a = alpha; break;
++
+     case Color::GrayType:  m_value.gray.a = alpha; break;
+ 
+     case Color::IndexType: *this = Color::fromRgb(getRed(), getGreen(), getBlue(), alpha); break;
+diff --git a/src/app/color.h b/src/app/color.h
+index dc82928e5a..fa3a5f4901 100644
+--- a/src/app/color.h
++++ b/src/app/color.h
+@@ -28,6 +28,7 @@
+     MaskType,
+     RgbType,
+     HsvType,
++    OkHslType,
+     HslType,
+     GrayType,
+     IndexType,
+@@ -42,6 +43,7 @@
+   static Color fromMask();
+   static Color fromRgb(int r, int g, int b, int a = 255);
+   static Color fromHsv(double h, double s, double v, int a = 255); // h=[0,360], s=[0,1], v=[0,1]
++  static Color fromOkHsl(double h, double s, double l, int a = 255); // h=[0,360], s=[0,1], v=[0,1]
+   static Color fromHsl(double h, double s, double l, int a = 255); // h=[0,360], s=[0,1], v=[0,1]
+   static Color fromGray(int g, int a = 255);
+   static Color fromIndex(int index);
+@@ -72,6 +74,9 @@
+   double getHslHue() const;
+   double getHslSaturation() const;
+   double getHslLightness() const;
++  double getOkHslHue() const;
++  double getOkHslSaturation() const;
++  double getOkHslLightness() const;
+   int getGray() const;
+   int getIndex() const;
+   doc::tile_t getTile() const;
+@@ -98,6 +103,10 @@
+     struct {
+       double h, s, l;
+       int a;
++    } okhsl;
++    struct {
++      double h, s, l;
++      int a;
+     } hsl;
+     struct {
+       int g, a;
+diff --git a/src/app/color_utils.cpp b/src/app/color_utils.cpp
+index ed84f99fba..a6bc556206 100644
+--- a/src/app/color_utils.cpp
++++ b/src/app/color_utils.cpp
+@@ -55,6 +55,10 @@
+       c = gfx::rgba(color.getRed(), color.getGreen(), color.getBlue(), color.getAlpha());
+       break;
+ 
++    case app::Color::OkHslType:
++      c = gfx::rgba(color.getRed(), color.getGreen(), color.getBlue(), color.getAlpha());
++      break;
++
+     case app::Color::GrayType:
+       c = gfx::rgba(color.getGray(), color.getGray(), color.getGray(), color.getAlpha());
+       break;
+diff --git a/src/app/commands/cmd_eyedropper.cpp b/src/app/commands/cmd_eyedropper.cpp
+index 476f234e8f..1adf64ad71 100644
+--- a/src/app/commands/cmd_eyedropper.cpp
++++ b/src/app/commands/cmd_eyedropper.cpp
+@@ -93,6 +93,13 @@
+                                       picked.getAlpha());
+           break;
+ 
++        case app::Color::OkHslType:
++          color = app::Color::fromOkHsl(color.getOkHslHue(),
++                                        color.getOkHslSaturation(),
++                                        color.getOkHslLightness(),
++                                        picked.getAlpha());
++          break;
++
+         case app::Color::GrayType:
+           color = app::Color::fromGray(color.getGray(), picked.getAlpha());
+           break;
+@@ -146,6 +153,22 @@
+                                     picked.getHslLightness(),
+                                     color.getAlpha());
+       break;
++    case app::gen::EyedropperChannel::OKHSLA:
++      if (picked.getType() == app::Color::OkHslType)
++        color = picked;
++      else
++        color = app::Color::fromOkHsl(picked.getOkHslHue(),
++                                    picked.getOkHslSaturation(),
++                                    picked.getOkHslLightness(),
++                                    picked.getAlpha());
++      break;
++    case app::gen::EyedropperChannel::OKHSL:
++      if (picked.getAlpha() > 0)
++        color = app::Color::fromOkHsl(picked.getOkHslHue(),
++                                    picked.getOkHslSaturation(),
++                                    picked.getOkHslLightness(),
++                                    color.getAlpha());
++      break;
+     case app::gen::EyedropperChannel::GRAYA:
+       if (picked.getType() == app::Color::GrayType)
+         color = picked;
+diff --git a/src/app/commands/cmd_set_color_selector.cpp b/src/app/commands/cmd_set_color_selector.cpp
+index b76b44b7eb..21ad6a89a7 100644
+--- a/src/app/commands/cmd_set_color_selector.cpp
++++ b/src/app/commands/cmd_set_color_selector.cpp
+@@ -61,6 +61,9 @@
+   else if (type == "ryb-wheel") {
+     m_type = ColorBar::ColorSelector::RYB_WHEEL;
+   }
++  else if (type == "oklab-wheel") {
++    m_type = ColorBar::ColorSelector::OKLAB_WHEEL;
++  }
+   else if (type == "normal-map-wheel") {
+     m_type = ColorBar::ColorSelector::NORMAL_MAP_WHEEL;
+   }
+@@ -92,6 +95,9 @@
+     case ColorBar::ColorSelector::RYB_WHEEL:
+       type = Strings::commands_SetColorSelector_RYBWheel();
+       break;
++    case ColorBar::ColorSelector::OKLAB_WHEEL:
++      type = Strings::commands_SetColorSelector_OKLABWheel();
++      break;
+     case ColorBar::ColorSelector::NORMAL_MAP_WHEEL:
+       type = Strings::commands_SetColorSelector_NormalMapWheel();
+       break;
+diff --git a/src/app/ui/color_bar.cpp b/src/app/ui/color_bar.cpp
+index b41ea7eb31..d3c61764c0 100644
+--- a/src/app/ui/color_bar.cpp
++++ b/src/app/ui/color_bar.cpp
+@@ -492,6 +492,7 @@
+ 
+     case ColorSelector::RGB_WHEEL:
+     case ColorSelector::RYB_WHEEL:
++    case ColorSelector::OKLAB_WHEEL:
+     case ColorSelector::NORMAL_MAP_WHEEL:
+       if (!m_wheel) {
+         m_wheel = new ColorWheel;
+@@ -506,6 +507,9 @@
+       else if (m_selector == ColorSelector::RYB_WHEEL) {
+         m_wheel->setColorModel(ColorWheel::ColorModel::RYB);
+       }
++      else if (m_selector == ColorSelector::OKLAB_WHEEL) {
++        m_wheel->setColorModel(ColorWheel::ColorModel::OKLAB);
++      }
+       else if (m_selector == ColorSelector::NORMAL_MAP_WHEEL) {
+         m_wheel->setColorModel(ColorWheel::ColorModel::NORMAL_MAP);
+       }
+diff --git a/src/app/ui/color_bar.h b/src/app/ui/color_bar.h
+index ed4fa4d51c..5dcfc303e2 100644
+--- a/src/app/ui/color_bar.h
++++ b/src/app/ui/color_bar.h
+@@ -61,6 +61,7 @@
+     SPECTRUM,
+     RGB_WHEEL,
+     RYB_WHEEL,
++    OKLAB_WHEEL,
+     TINT_SHADE_TONE,
+     NORMAL_MAP_WHEEL,
+   };
+diff --git a/src/app/ui/color_popup.cpp b/src/app/ui/color_popup.cpp
+index 6d6dd0f71b..3ff348fcb1 100644
+--- a/src/app/ui/color_popup.cpp
++++ b/src/app/ui/color_popup.cpp
+@@ -42,7 +42,7 @@
+ using namespace ui;
+ using namespace doc;
+ 
+-enum { INDEX_MODE, RGB_MODE, HSV_MODE, HSL_MODE, GRAY_MODE, MASK_MODE, COLOR_MODES };
++enum { INDEX_MODE, RGB_MODE, HSV_MODE, HSL_MODE, OKHSL_MODE, GRAY_MODE, MASK_MODE, COLOR_MODES };
+ 
+ static std::unique_ptr<doc::Palette> g_simplePal(nullptr);
+ 
+@@ -190,6 +190,7 @@
+   m_colorType.addItem("RGB")->setFocusStop(false);
+   m_colorType.addItem("HSV")->setFocusStop(false);
+   m_colorType.addItem("HSL")->setFocusStop(false);
++  m_colorType.addItem("OKHSL")->setFocusStop(false);
+   m_colorType.addItem("Gray")->setFocusStop(false);
+   m_colorType.addItem("Mask")->setFocusStop(false);
+ 
+@@ -452,6 +453,12 @@
+                                      newColor.getHslLightness(),
+                                      newColor.getAlpha());
+       break;
++    case OKHSL_MODE:
++      newColor = app::Color::fromOkHsl(newColor.getOkHslHue(),
++                                       newColor.getOkHslSaturation(),
++                                       newColor.getOkHslLightness(),
++                                       newColor.getAlpha());
++      break;
+     case GRAY_MODE: newColor = app::Color::fromGray(newColor.getGray(), newColor.getAlpha()); break;
+     case MASK_MODE: newColor = app::Color::fromMask(); break;
+   }
+@@ -522,6 +529,7 @@
+       case app::Color::RgbType:  m_colorType.setSelectedItem(RGB_MODE); break;
+       case app::Color::HsvType:  m_colorType.setSelectedItem(HSV_MODE); break;
+       case app::Color::HslType:  m_colorType.setSelectedItem(HSL_MODE); break;
++      case app::Color::OkHslType:m_colorType.setSelectedItem(OKHSL_MODE); break;
+       case app::Color::GrayType: m_colorType.setSelectedItem(GRAY_MODE); break;
+       case app::Color::MaskType: m_colorType.setSelectedItem(MASK_MODE); break;
+     }
+@@ -534,6 +542,8 @@
+     types.push_back(app::Color::HsvType);
+   if (m_colorType.getItem(HSL_MODE)->isSelected())
+     types.push_back(app::Color::HslType);
++  if (m_colorType.getItem(OKHSL_MODE)->isSelected())
++    types.push_back(app::Color::OkHslType);
+   if (m_colorType.getItem(GRAY_MODE)->isSelected())
+     types.push_back(app::Color::GrayType);
+   m_sliders.setColorTypes(types);
+diff --git a/src/app/ui/color_sliders.cpp b/src/app/ui/color_sliders.cpp
+index c1477072be..85a9611e1a 100644
+--- a/src/app/ui/color_sliders.cpp
++++ b/src/app/ui/color_sliders.cpp
+@@ -21,6 +21,7 @@
+ #include "app/ui/skin/skin_theme.h"
+ #include "base/scoped_value.h"
+ #include "gfx/hsl.h"
++#include "gfx/okhsl.h"
+ #include "gfx/rgb.h"
+ #include "ui/box.h"
+ #include "ui/entry.h"
+@@ -104,6 +105,22 @@
+                                                                 double(x) / double(w)));
+           break;
+ 
++        case ColorSliders::Channel::OkHslHue:
++          color = color_utils::color_for_ui(app::Color::fromOkHsl(360.0 * x / w,
++                                                                  m_color.getOkHslSaturation(),
++                                                                  m_color.getOkHslLightness()));
++          break;
++        case ColorSliders::Channel::OkHslSaturation:
++          color = color_utils::color_for_ui(app::Color::fromOkHsl(m_color.getOkHslHue(),
++                                                                  double(x) / double(w),
++                                                                  m_color.getOkHslLightness()));
++          break;
++        case ColorSliders::Channel::OkHslLightness:
++          color = color_utils::color_for_ui(app::Color::fromOkHsl(m_color.getOkHslHue(),
++                                                                  m_color.getOkHslSaturation(),
++                                                                  double(x) / double(w)));
++          break;
++
+         case ColorSliders::Channel::Gray:
+           color = color_utils::color_for_ui(app::Color::fromGray(255 * x / w));
+           break;
+@@ -242,7 +259,7 @@
+ 
+   // Same order as in Channel enum
+   static_assert(Channel::Red == (Channel)0, "");
+-  static_assert(Channel::Alpha == (Channel)10, "");
++  static_assert(Channel::Alpha == (Channel)13, "");
+   addSlider(Channel::Red, "R", 0, 255, -100, 100);
+   addSlider(Channel::Green, "G", 0, 255, -100, 100);
+   addSlider(Channel::Blue, "B", 0, 255, -100, 100);
+@@ -252,6 +269,9 @@
+   addSlider(Channel::HslHue, "H", 0, 360, -180, 180);
+   addSlider(Channel::HslSaturation, "S", 0, 100, -100, 100);
+   addSlider(Channel::HslLightness, "L", 0, 100, -100, 100);
++  addSlider(Channel::OkHslHue, "H", 0, 360, -180, 180);
++  addSlider(Channel::OkHslSaturation, "S", 0, 100, -100, 100);
++  addSlider(Channel::OkHslLightness, "L", 0, 100, -100, 100);
+   addSlider(Channel::Gray, "V", 0, 255, -100, 100);
+   addSlider(Channel::Alpha, "A", 0, 255, -100, 100);
+ 
+@@ -302,6 +322,13 @@
+         m_items[Channel::Alpha].show = true;
+         visible = true;
+         break;
++      case app::Color::OkHslType:
++        m_items[Channel::OkHslHue].show = true;
++        m_items[Channel::OkHslSaturation].show = true;
++        m_items[Channel::OkHslLightness].show = true;
++        m_items[Channel::Alpha].show = true;
++        visible = true;
++        break;
+       case app::Color::GrayType:
+         m_items[Channel::Gray].show = true;
+         m_items[Channel::Alpha].show = true;
+@@ -519,6 +546,9 @@
+   setAbsSliderValue(Channel::HslHue, int(color.getHslHue() + 0.5));
+   setAbsSliderValue(Channel::HslSaturation, int(color.getHslSaturation() * 100.0 + 0.5));
+   setAbsSliderValue(Channel::HslLightness, int(color.getHslLightness() * 100.0 + 0.5));
++  setAbsSliderValue(Channel::OkHslHue, int(color.getOkHslHue() + 0.5));
++  setAbsSliderValue(Channel::OkHslSaturation, int(color.getOkHslSaturation() * 100.0 + 0.5));
++  setAbsSliderValue(Channel::OkHslLightness, int(color.getOkHslLightness() * 100.0 + 0.5));
+   setAbsSliderValue(Channel::Gray, color.getGray());
+   setAbsSliderValue(Channel::Alpha, color.getAlpha());
+ }
+@@ -548,6 +578,13 @@
+                                  getAbsSliderValue(Channel::HslSaturation) / 100.0,
+                                  getAbsSliderValue(Channel::HslLightness) / 100.0,
+                                  getAbsSliderValue(Channel::Alpha));
++    case Channel::OkHslHue:
++    case Channel::OkHslSaturation:
++    case Channel::OkHslLightness:
++      return app::Color::fromOkHsl(getAbsSliderValue(Channel::OkHslHue),
++                                   getAbsSliderValue(Channel::OkHslSaturation) / 100.0,
++                                   getAbsSliderValue(Channel::OkHslLightness) / 100.0,
++                                   getAbsSliderValue(Channel::Alpha));
+     case Channel::Gray:
+       return app::Color::fromGray(getAbsSliderValue(Channel::Gray),
+                                   getAbsSliderValue(Channel::Alpha));
+diff --git a/src/app/ui/color_sliders.h b/src/app/ui/color_sliders.h
+index 2d5f41744b..9ca8771dc8 100644
+--- a/src/app/ui/color_sliders.h
++++ b/src/app/ui/color_sliders.h
+@@ -41,6 +41,9 @@
+     HslHue,
+     HslSaturation,
+     HslLightness,
++    OkHslHue,
++    OkHslSaturation,
++    OkHslLightness,
+     Gray,
+     Alpha,
+     Channels
+diff --git a/src/app/ui/color_wheel.cpp b/src/app/ui/color_wheel.cpp
+index 73b89f8540..b460c74b2d 100644
+--- a/src/app/ui/color_wheel.cpp
++++ b/src/app/ui/color_wheel.cpp
+@@ -5,6 +5,7 @@
+ // This program is distributed under the terms of
+ // the End-User License Agreement for Aseprite.
+ 
++#include "app/ui/color_selector.h"
+ #ifdef HAVE_CONFIG_H
+   #include "config.h"
+ #endif
+@@ -75,10 +76,12 @@
+   if (m_mainShader.empty()) {
+     m_mainShader += "uniform half3 iRes;"
+                     "uniform half4 iHsv;"
++                    "uniform half4 iOkHsl;"
+                     "uniform half4 iBack;"
+                     "uniform int iDiscrete;"
+                     "uniform int iMode;";
+     m_mainShader += kHSV_to_RGB_sksl;
++    m_mainShader += kOKHSL_to_RGB_sksl;
+     m_mainShader += R"(
+ const half PI = 3.1415;
+ 
+@@ -142,6 +145,9 @@
+   if (iMode == 1) { // RYB color wheel
+    hue = rybhue_to_rgbhue(hue);
+   }
++  if (iMode == 3) {
++    hue += 30;
++  }
+   hue /= 360.0;
+ 
+   half sat = r / 0.5;
+@@ -152,6 +158,9 @@
+    sat /= 100.0;
+    sat = clamp(sat, 0.0, 1.0);
+   }
++  if (iMode == 3) {
++    return okhsl_to_srgb(vec3(hue, sat, iOkHsl.w > 0 ? iOkHsl.z: 1.0)).rgb1;
++  }
+   return hsv_to_rgb(vec3(hue, sat, iHsv.w > 0 ? iHsv.z: 1.0)).rgb1;
+  }
+  else {
+@@ -169,12 +178,18 @@
+ {
+   if (m_bottomShader.empty()) {
+     m_bottomShader += "uniform half3 iRes;"
+-                      "uniform half4 iHsv;";
++                      "uniform half4 iHsv;"
++                      "uniform half4 iOkHsl;"
++                      "uniform int iMode;";
+     m_bottomShader += kHSV_to_RGB_sksl;
++    m_bottomShader += kOKHSL_to_RGB_sksl;
+     // TODO should we display the hue bar with the current sat/value?
+     m_bottomShader += R"(
+ half4 main(vec2 fragcoord) {
+  half v = (fragcoord.x / iRes.x);
++ if (iMode == 3) {
++   return okhsl_to_srgb(half3(iOkHsl.x, iOkHsl.y, v)).rgb1;
++ }
+  return hsv_to_rgb(half3(iHsv.x, iHsv.y, v)).rgb1;
+ }
+ )";
+@@ -185,10 +200,11 @@
+ void ColorWheel::setShaderParams(SkRuntimeShaderBuilder& builder, bool main)
+ {
+   builder.uniform("iHsv") = appColorHsv_to_SkV4(m_color);
++  builder.uniform("iOkHsl") = appColorOkHsl_to_SkV4(m_color);
++  builder.uniform("iMode") = int(m_colorModel);
+   if (main) {
+     builder.uniform("iBack") = gfxColor_to_SkV4(m_bgColor);
+     builder.uniform("iDiscrete") = (m_discrete ? 1 : 0);
+-    builder.uniform("iMode") = int(m_colorModel);
+   }
+ }
+ 
+@@ -213,10 +229,17 @@
+       if (gfx::Rect(umax - (n - i) * boxsize, vmax - boxsize, boxsize, boxsize).contains(pos)) {
+         m_harmonyPicked = true;
+ 
+-        color = app::Color::fromHsv(convertHueAngle(color.getHsvHue(), 1),
+-                                    color.getHsvSaturation(),
+-                                    color.getHsvValue(),
+-                                    m_color.getAlpha());
++        if (m_colorModel == ColorModel::OKLAB) {
++          color = app::Color::fromOkHsl(convertHueAngle(color.getOkHslHue(), 1),
++                                      color.getOkHslSaturation(),
++                                      color.getOkHslLightness(),
++                                      m_color.getAlpha());
++        } else {
++          color = app::Color::fromHsv(convertHueAngle(color.getHsvHue(), 1),
++                                      color.getHsvSaturation(),
++                                      color.getHsvValue(),
++                                      m_color.getAlpha());
++        }
+         return color;
+       }
+     }
+@@ -288,6 +311,7 @@
+     }
+     hue %= 360; // To leave hue in [0,360) range
+     hue = convertHueAngle(hue, 1);
++    hue %= 360;
+ 
+     int sat;
+     if (m_discrete) {
+@@ -299,6 +323,12 @@
+       sat = int(100.0 * d / m_wheelRadius);
+     }
+ 
++    if (m_colorModel == ColorModel::OKLAB) {
++      return app::Color::fromOkHsl(std::clamp(hue, 0, 360),
++                                   std::clamp(sat / 100.0, 0.0, 1.0),
++                                   (m_color.getType() != Color::MaskType ? m_color.getOkHslLightness() : 1.0),
++                                   getCurrentAlphaForNewColor());
++    }
+     return app::Color::fromHsv(std::clamp(hue, 0, 360),
+                                std::clamp(sat / 100.0, 0.0, 1.0),
+                                (m_color.getType() != Color::MaskType ? m_color.getHsvValue() : 1.0),
+@@ -308,15 +338,23 @@
+   return app::Color::fromMask();
+ }
+ 
++// NOTE: the slider below wheel ?
+ app::Color ColorWheel::getBottomBarColor(const int u, const int umax)
+ {
+   double val = double(u) / double(umax);
++  if (m_colorModel == ColorModel::OKLAB) {
++    return app::Color::fromOkHsl(m_color.getOkHslHue(),
++                                 m_color.getOkHslSaturation(),
++                                 std::clamp(val, 0.0, 1.0),
++                                 getCurrentAlphaForNewColor());
++  }
+   return app::Color::fromHsv(m_color.getHsvHue(),
+                              m_color.getHsvSaturation(),
+                              std::clamp(val, 0.0, 1.0),
+                              getCurrentAlphaForNewColor());
+ }
+ 
++// NOTE: the little color square on bottom right
+ void ColorWheel::onPaintMainArea(ui::Graphics* g, const gfx::Rect& rc)
+ {
+   bool oldHarmonyPicked = m_harmonyPicked;
+@@ -364,19 +402,32 @@
+ 
+       for (int i = 0; i < n; ++i) {
+         app::Color color = getColorInHarmony(i);
+-        double angle = color.getHsvHue() - 30.0;
+-        double dist = color.getHsvSaturation();
+-
+-        color = app::Color::fromHsv(convertHueAngle(color.getHsvHue(), 1),
+-                                    color.getHsvSaturation(),
+-                                    color.getHsvValue());
++        double angle;
++        double dist;
++        if (m_colorModel == ColorModel::OKLAB) {
++          angle = color.getOkHslHue() - 30.0;
++          dist = color.getOkHslSaturation();
++          color = app::Color::fromOkHsl(convertHueAngle(color.getOkHslHue(), 1),
++                                       color.getOkHslSaturation(),
++                                       color.getOkHslLightness());
++        } else {
++          angle = color.getHsvHue() - 30.0;
++          dist = color.getHsvSaturation();
++          color = app::Color::fromHsv(convertHueAngle(color.getHsvHue(), 1),
++                                      color.getHsvSaturation(),
++                                      color.getHsvValue());
++        }
+ 
+         gfx::Point pos = m_wheelBounds.center() +
+                          gfx::Point(
+                            int(+std::cos(PI * angle / 180.0) * double(m_wheelRadius) * dist),
+                            int(-std::sin(PI * angle / 180.0) * double(m_wheelRadius) * dist));
+ 
+-        paintColorIndicator(g, pos, color.getHsvValue() < 0.5);
++        if (m_colorModel == ColorModel::OKLAB) {
++          paintColorIndicator(g, pos, color.getOkHslLightness() < 0.5);
++        } else {
++          paintColorIndicator(g, pos, color.getHsvValue() < 0.5);
++        }
+ 
+         paint.color(gfx::rgba(color.getRed(), color.getGreen(), color.getBlue(), 255), cs.get());
+         g->drawRect(
+@@ -392,7 +443,12 @@
+ void ColorWheel::onPaintBottomBar(ui::Graphics* g, const gfx::Rect& rc)
+ {
+   if (m_color.getType() != app::Color::MaskType) {
+-    double val = m_color.getHsvValue();
++    double val;
++    if (m_colorModel == ColorModel::OKLAB) {
++      val = m_color.getOkHslLightness();
++    } else {
++      val = m_color.getHsvValue();
++    }
+     gfx::Point pos(rc.x + int(double(rc.w) * val), rc.y + rc.h / 2);
+     paintColorIndicator(g, pos, val < 0.5);
+   }
+@@ -430,8 +486,15 @@
+   }
+ 
+   if (m_paintFlags & BottomBarFlag) {
+-    double hue = m_color.getHsvHue();
+-    double sat = m_color.getHsvSaturation();
++    double hue;
++    double sat;
++    if (m_colorModel == ColorModel::OKLAB) {
++      hue = m_color.getOkHslHue();
++      sat = m_color.getOkHslSaturation();
++    } else {
++      hue = m_color.getHsvHue();
++      sat = m_color.getHsvSaturation();
++    }
+     os::Paint paint;
+     for (int x = 0; x < bottom.w && !stop; ++x) {
+       paint.color(
+@@ -450,17 +513,19 @@
+ 
+ int ColorWheel::onNeedsSurfaceRepaint(const app::Color& newColor)
+ {
+-  return
+-    // Only if the saturation changes we have to redraw the main surface.
+-    (m_colorModel != ColorModel::NORMAL_MAP &&
+-         cs_double_diff(m_color.getHsvValue(), newColor.getHsvValue()) ?
+-       MainAreaFlag :
+-       0) |
+-    (cs_double_diff(m_color.getHsvHue(), newColor.getHsvHue()) ||
+-         cs_double_diff(m_color.getHsvSaturation(), newColor.getHsvSaturation()) ?
+-       BottomBarFlag :
+-       0) |
+-    ColorSelector::onNeedsSurfaceRepaint(newColor);
++  int out = 0;
++  if (m_colorModel == ColorModel::OKLAB) {
++    bool l_changed = cs_double_diff(m_color.getOkHslLightness(), newColor.getOkHslLightness());
++    bool h_changed = cs_double_diff(m_color.getOkHslHue(), newColor.getOkHslHue());
++    out |= (l_changed ? MainAreaFlag : 0);
++    out |= (h_changed ? BottomBarFlag : 0);
++  } else {
++    bool v_changed = cs_double_diff(m_color.getHsvValue(), newColor.getHsvValue());
++    bool h_changed = cs_double_diff(m_color.getHsvHue(), newColor.getHsvHue());
++    out |= (v_changed ? MainAreaFlag : 0);
++    out |= (h_changed ? BottomBarFlag : 0);
++  }
++  return out | ColorSelector::onNeedsSurfaceRepaint(newColor);
+ }
+ 
+ void ColorWheel::setDiscrete(bool state)
+@@ -500,9 +565,17 @@
+ {
+   int i = std::clamp((int)m_harmony, 0, (int)Harmony::LAST);
+   j = std::clamp(j, 0, harmonies[i].n - 1);
+-  double hue = convertHueAngle(m_color.getHsvHue(), -1) + harmonies[i].hues[j];
+-  double sat = m_color.getHsvSaturation() * harmonies[i].sats[j] / 100.0;
+-  return app::Color::fromHsv(std::fmod(hue, 360), std::clamp(sat, 0.0, 1.0), m_color.getHsvValue());
++  double hue;
++  double sat;
++  if (m_colorModel == ColorModel::OKLAB) {
++    hue = convertHueAngle(m_color.getOkHslHue(), -1) + harmonies[i].hues[j];
++    sat = m_color.getOkHslSaturation() * harmonies[i].sats[j] / 100.0;
++    return app::Color::fromOkHsl(std::fmod(hue, 360), std::clamp(sat, 0.0, 1.0), m_color.getOkHslLightness());
++  } else {
++    hue = convertHueAngle(m_color.getHsvHue(), -1) + harmonies[i].hues[j];
++    sat = m_color.getHsvSaturation() * harmonies[i].sats[j] / 100.0;
++    return app::Color::fromHsv(std::fmod(hue, 360), std::clamp(sat, 0.0, 1.0), m_color.getHsvValue());
++  }
+ }
+ 
+ void ColorWheel::onResize(ui::ResizeEvent& ev)
+@@ -605,6 +678,13 @@
+       else
+         return h; // from blue to red (same hue)
+     }
++  } else if (m_colorModel == ColorModel::OKLAB) {
++    if (dir == 1) {
++      return h + 30;
++    }
++    else {
++      return h - 30;
++    }
+   }
+   return h;
+ }
+diff --git a/src/app/ui/color_wheel.h b/src/app/ui/color_wheel.h
+index d616218318..cc96b1288b 100644
+--- a/src/app/ui/color_wheel.h
++++ b/src/app/ui/color_wheel.h
+@@ -20,6 +20,7 @@
+     RGB,
+     RYB,
+     NORMAL_MAP,
++    OKLAB,
+   };
+ 
+   enum class Harmony {
+diff --git a/src/app/util/shader_helpers.h b/src/app/util/shader_helpers.h
+index 76ad8a5961..78ebbbd354 100644
+--- a/src/app/util/shader_helpers.h
++++ b/src/app/util/shader_helpers.h
+@@ -59,6 +59,338 @@
+ }
+ )";
+ 
++inline constexpr char kOKHSL_to_RGB_sksl[] = R"(
++// -----------------------------------------------------------------------
++// OKLab / OKHSL -> sRGB conversion utilities for SkSL (Skia)
++//
++// Ported from the public-domain reference implementation by Björn Ottosson:
++// https://bottosson.github.io/posts/colorpicker/
++// https://bottosson.github.io/posts/gamutclipping/
++//
++// Conventions:
++//  - lab.x = L, lab.y = a, lab.z = b   (OKLab)
++//  - hsl.x = h [0,1], hsl.y = s [0,1], hsl.z = l [0,1]   (OKHSL)
++//  - "a, b" arguments to find_cusp / find_gamut_intersection / get_Cs
++//    must be a unit vector on the OKLab a/b plane (i.e. a*a + b*b == 1),
++//    since they represent a pure hue direction.
++//  - Output rgb is in [0,1] (may go outside if the source color is out
++//    of gamut — clip/tonemap externally if needed).
++// -----------------------------------------------------------------------
++
++// Signed cube root — pow() is undefined for negative bases in GLSL/SkSL.
++float cbrt_(float x) {
++    return sign(x) * pow(abs(x), 1.0 / 3.0);
++}
++
++// OKLab -> linear sRGB
++vec3 oklab_to_linear_srgb(vec3 lab) {
++    float L = lab.x;
++    float a = lab.y;
++    float b = lab.z;
++
++    float l_ = L + 0.3963377774 * a + 0.2158037573 * b;
++    float m_ = L - 0.1055613458 * a - 0.0638541728 * b;
++    float s_ = L - 0.0894841775 * a - 1.2914855480 * b;
++
++    float l = l_ * l_ * l_;
++    float m = m_ * m_ * m_;
++    float s = s_ * s_ * s_;
++
++    return vec3(
++        4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
++       -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
++       -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
++    );
++}
++
++// Toe function: maps OKLab L to a more perceptually-uniform lightness L_r.
++float toe(float x) {
++    const float k_1 = 0.206;
++    const float k_2 = 0.03;
++    const float k_3 = (1.0 + k_1) / (1.0 + k_2);
++    return 0.5 * (k_3 * x - k_1 +
++        sqrt((k_3 * x - k_1) * (k_3 * x - k_1) + 4.0 * k_2 * k_3 * x));
++}
++
++// Inverse toe function: L_r -> OKLab L.
++float toe_inv(float x) {
++    const float k_1 = 0.206;
++    const float k_2 = 0.03;
++    const float k_3 = (1.0 + k_1) / (1.0 + k_2);
++    return (x * x + k_1 * x) / (k_3 * (x + k_2));
++}
++
++// Finds the maximum saturation (S = C/L) possible for a given hue that
++// still fits inside sRGB. a, b must be a unit vector (a*a + b*b == 1).
++float compute_max_saturation(float a, float b) {
++    float k0, k1, k2, k3, k4, wl, wm, ws;
++
++    if (-1.88170328 * a - 0.80936493 * b > 1.0) {
++        // Red component goes out of gamut first
++        k0 = 1.19086277; k1 =  1.76576728; k2 = 0.59662641; k3 = 0.75515197; k4 = 0.56771245;
++        wl =  4.0767416621; wm = -3.3077115913; ws =  0.2309699292;
++    } else if (1.81444104 * a - 1.19445276 * b > 1.0) {
++        // Green component goes out of gamut first
++        k0 = 0.73956515; k1 = -0.45954404; k2 = 0.08285427; k3 = 0.12541070; k4 = 0.14503204;
++        wl = -1.2684380046; wm =  2.6097574011; ws = -0.3413193965;
++    } else {
++        // Blue component goes out of gamut first
++        k0 = 1.35733652; k1 = -0.00915799; k2 = -1.15130210; k3 = -0.50559606; k4 = 0.00692167;
++        wl = -0.0041960863; wm = -0.7034186147; ws =  1.7076147010;
++    }
++
++    // Polynomial approximation of max saturation
++    float S = k0 + k1 * a + k2 * b + k3 * a * a + k4 * a * b;
++
++    // One step of Halley's method to refine the estimate
++    float k_l =  0.3963377774 * a + 0.2158037573 * b;
++    float k_m = -0.1055613458 * a - 0.0638541728 * b;
++    float k_s = -0.0894841775 * a - 1.2914855480 * b;
++
++    float l_ = 1.0 + S * k_l;
++    float m_ = 1.0 + S * k_m;
++    float s_ = 1.0 + S * k_s;
++
++    float l = l_ * l_ * l_;
++    float m = m_ * m_ * m_;
++    float s = s_ * s_ * s_;
++
++    float l_dS = 3.0 * k_l * (l_ * l_);
++    float m_dS = 3.0 * k_m * (m_ * m_);
++    float s_dS = 3.0 * k_s * (s_ * s_);
++
++    float l_dS2 = 6.0 * (k_l * k_l) * l_;
++    float m_dS2 = 6.0 * (k_m * k_m) * m_;
++    float s_dS2 = 6.0 * (k_s * k_s) * s_;
++
++    float f  = wl * l     + wm * m     + ws * s;
++    float f1 = wl * l_dS  + wm * m_dS  + ws * s_dS;
++    float f2 = wl * l_dS2 + wm * m_dS2 + ws * s_dS2;
++
++    S = S - f * f1 / (f1 * f1 - 0.5 * f * f2);
++
++    return S;
++}
++
++// Finds L_cusp and C_cusp (the point of maximum chroma) for a given hue.
++// a, b must be a unit vector (a*a + b*b == 1).
++// Returns vec2(L_cusp, C_cusp).
++vec2 find_cusp(float a, float b) {
++    float S_cusp = compute_max_saturation(a, b);
++
++    vec3 rgb_at_max = oklab_to_linear_srgb(vec3(1.0, S_cusp * a, S_cusp * b));
++    float L_cusp = cbrt_(1.0 / max(max(rgb_at_max.r, rgb_at_max.g), rgb_at_max.b));
++    float C_cusp = L_cusp * S_cusp;
++
++    return vec2(L_cusp, C_cusp);
++}
++
++// Finds the intersection, on a given hue's gamut boundary, of the line
++// defined by L = L0*(1-t) + t*L1, C = t*C1. Used to find how far a color
++// can go before leaving the sRGB gamut. a, b must be a unit vector.
++float find_gamut_intersection(float a, float b, float L1, float C1, float L0) {
++    vec2 cusp = find_cusp(a, b);
++
++    float t;
++    if (((L1 - L0) * cusp.y - (cusp.x - L0) * C1) <= 0.0) {
++        // Lower half of the gamut triangle
++        t = cusp.y * L0 / (C1 * cusp.x + cusp.y * (L0 - L1));
++    } else {
++        // Upper half: first intersect with the gamut triangle
++        t = cusp.y * (L0 - 1.0) / (C1 * (cusp.x - 1.0) + cusp.y * (L0 - L1));
++
++        // Then refine with one step of Halley's method against the true
++        // (curved) gamut boundary.
++        float dL = L1 - L0;
++        float dC = C1;
++
++        float k_l =  0.3963377774 * a + 0.2158037573 * b;
++        float k_m = -0.1055613458 * a - 0.0638541728 * b;
++        float k_s = -0.0894841775 * a - 1.2914855480 * b;
++
++        float l_dt = dL + dC * k_l;
++        float m_dt = dL + dC * k_m;
++        float s_dt = dL + dC * k_s;
++
++        float L = L0 * (1.0 - t) + t * L1;
++        float C = t * C1;
++
++        float l_ = L + C * k_l;
++        float m_ = L + C * k_m;
++        float s_ = L + C * k_s;
++
++        float l = l_ * l_ * l_;
++        float m = m_ * m_ * m_;
++        float s = s_ * s_ * s_;
++
++        float ldt = 3.0 * l_dt * (l_ * l_);
++        float mdt = 3.0 * m_dt * (m_ * m_);
++        float sdt = 3.0 * s_dt * (s_ * s_);
++
++        float ldt2 = 6.0 * (l_dt * l_dt) * l_;
++        float mdt2 = 6.0 * (m_dt * m_dt) * m_;
++        float sdt2 = 6.0 * (s_dt * s_dt) * s_;
++
++        float r  =  4.0767416621 * l    - 3.3077115913 * m    + 0.2309699292 * s    - 1.0;
++        float r1 =  4.0767416621 * ldt  - 3.3077115913 * mdt  + 0.2309699292 * sdt;
++        float r2 =  4.0767416621 * ldt2 - 3.3077115913 * mdt2 + 0.2309699292 * sdt2;
++        float u_r = r1 / (r1 * r1 - 0.5 * r * r2);
++        float t_r = -r * u_r;
++
++        float g  = -1.2684380046 * l    + 2.6097574011 * m    - 0.3413193965 * s    - 1.0;
++        float g1 = -1.2684380046 * ldt  + 2.6097574011 * mdt  - 0.3413193965 * sdt;
++        float g2 = -1.2684380046 * ldt2 + 2.6097574011 * mdt2 - 0.3413193965 * sdt2;
++        float u_g = g1 / (g1 * g1 - 0.5 * g * g2);
++        float t_g = -g * u_g;
++
++        float bch = -0.0041960863 * l    - 0.7034186147 * m    + 1.7076147010 * s    - 1.0;
++        float b1  = -0.0041960863 * ldt  - 0.7034186147 * mdt  + 1.7076147010 * sdt;
++        float b2  = -0.0041960863 * ldt2 - 0.7034186147 * mdt2 + 1.7076147010 * sdt2;
++        float u_b = b1 / (b1 * b1 - 0.5 * bch * b2);
++        float t_b = -bch * u_b;
++
++        const float FLT_MAX = 3.4028235e+38;
++        t_r = u_r >= 0.0 ? t_r : FLT_MAX;
++        t_g = u_g >= 0.0 ? t_g : FLT_MAX;
++        t_b = u_b >= 0.0 ? t_b : FLT_MAX;
++
++        t += min(t_r, min(t_g, t_b));
++    }
++
++    return t;
++}
++
++// Returns vec3(C_0, C_mid, C_max): reference chroma values used to build
++// the OKHSL saturation mapping for lightness L and hue direction (a, b).
++// a, b must be a unit vector (a*a + b*b == 1).
++vec3 get_Cs(float L, float a, float b) {
++    vec2 cusp = find_cusp(a, b);
++
++    float C_max = find_gamut_intersection(a, b, L, 1.0, L);
++
++    float S_max = cusp.y / cusp.x;
++    float T_max = cusp.y / (1.0 - cusp.x);
++
++    // Scale factor compensating for the curved part of the gamut shape
++    float k = C_max / min(L * S_max, (1.0 - L) * T_max);
++
++    float C_mid;
++    {
++        // Smooth polynomial approximation of the mid-point cusp location
++        // (fit by Ottosson so that S_mid < S_max and T_mid < T_max)
++        float S = 0.11516993 + 1.0 / (
++            7.44778970 + 4.15901240 * b +
++            a * (-2.19557347 + 1.75198401 * b +
++            a * (-2.13704948 - 10.02301043 * b +
++            a * (-4.24894561 + 5.38770819 * b + 4.69891013 * a))));
++
++        float T = 0.11239642 + 1.0 / (
++            1.61320320 - 0.68124379 * b +
++            a * (0.40370612 + 0.90148123 * b +
++            a * (-0.27087943 + 0.61223990 * b +
++            a * (0.00299215 - 0.45399568 * b - 0.14661872 * a))));
++
++        float C_a = L * S;
++        float C_b = (1.0 - L) * T;
++
++        // Soft-min blend for a smooth chroma value
++        C_mid = 0.9 * k * sqrt(sqrt(
++            1.0 / (1.0 / (C_a * C_a * C_a * C_a) + 1.0 / (C_b * C_b * C_b * C_b))));
++    }
++
++    float C_0;
++    {
++        // C_0's shape is roughly hue-independent; constants are average S/T
++        float C_a = L * 0.4;
++        float C_b = (1.0 - L) * 0.8;
++
++        C_0 = sqrt(1.0 / (1.0 / (C_a * C_a) + 1.0 / (C_b * C_b)));
++    }
++
++    return vec3(C_0, C_mid, C_max);
++}
++
++// OKHSL -> OKLab. hsl = (h [0,1], s [0,1], l [0,1])
++vec3 okhsl_to_oklab(vec3 hsl) {
++    float h = hsl.x;
++    float s = hsl.y;
++    float l = hsl.z;
++
++    float L = toe_inv(l);
++    float a = 0.0;
++    float b = 0.0;
++
++    if (L != 0.0 && L != 1.0 && s != 0.0) {
++        float a_ = cos(6.28318530718 * h);
++        float b_ = sin(6.28318530718 * h);
++
++        vec3 cs = get_Cs(L, a_, b_);
++        float C_0   = cs.x;
++        float C_mid = cs.y;
++        float C_max = cs.z;
++
++        const float mid = 0.8;
++        const float mid_inv = 1.25;
++
++        float C, t;
++        if (s < mid) {
++            t = mid_inv * s;
++
++            float k_1 = mid * C_0;
++            float k_2 = 1.0 - k_1 / C_mid;
++
++            C = t * k_1 / (1.0 - k_2 * t);
++        } else {
++            t = (s - mid) / (1.0 - mid);
++
++            float k_0 = C_mid;
++            float k_1 = (1.0 - mid) * C_mid * C_mid * mid_inv * mid_inv / C_0;
++            float k_2 = 1.0 - k_1 / (C_max - C_mid);
++
++            C = k_0 + t * k_1 / (1.0 - k_2 * t);
++        }
++
++        a = C * a_;
++        b = C * b_;
++    }
++
++    return vec3(L, a, b);
++}
++
++// Componentwise sRGB OETF (linear -> gamma-encoded sRGB), clamped to [0,1].
++vec3 srgb_transfer_function(vec3 rgb) {
++    vec3 lo = 12.92 * rgb;
++    vec3 hi = 1.055 * pow(max(rgb, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055;
++    vec3 useHi = step(vec3(0.0031308), rgb); // 0 -> use lo, 1 -> use hi
++    return clamp(mix(lo, hi, useHi), 0.0, 1.0);
++}
++
++// OKLab -> gamma-encoded sRGB
++vec3 oklab_to_srgb(vec3 lab) {
++    vec3 lin = oklab_to_linear_srgb(lab);
++    return srgb_transfer_function(lin);
++}
++
++// OKHSL -> gamma-encoded sRGB
++vec3 okhsl_to_srgb(vec3 hsl) {
++    vec3 lab = okhsl_to_oklab(hsl);
++    return oklab_to_srgb(lab);
++}
++
++// -----------------------------------------------------------------------
++// Example usage as a runtime effect main():
++//
++// uniform float2 iResolution;
++//
++// half4 main(float2 fragCoord) {
++//     float2 uv = fragCoord / iResolution;
++//     vec3 hsl = vec3(uv.x, 1.0, uv.y);      // hue sweep x, lightness y
++//     vec3 rgb = okhsl_to_srgb(hsl);
++//     return half4(half3(rgb), 1.0);
++// }
++// -----------------------------------------------------------------------
++)";
++
+ inline SkV4 gfxColor_to_SkV4(gfx::Color color)
+ {
+   return SkV4{ float(gfx::getr(color) / 255.0),
+@@ -83,6 +415,14 @@
+                float(color.getAlpha() / 255.0) };
+ }
+ 
++inline SkV4 appColorOkHsl_to_SkV4(const app::Color& color)
++{
++  return SkV4{ float(color.getOkHslHue() / 360.0),
++               float(color.getOkHslSaturation()),
++               float(color.getOkHslLightness()),
++               float(color.getAlpha() / 255.0) };
++}
++
+ inline SkV4 appColorHsl_to_SkV4(const app::Color& color)
+ {
+   return SkV4{ float(color.getHslHue() / 360.0),

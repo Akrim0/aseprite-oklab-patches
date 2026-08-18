@@ -1,0 +1,577 @@
+diff --git a/laf/gfx/CMakeLists.txt b/laf/gfx/CMakeLists.txt
+index da8f26f..c3f923a 100644
+--- a/laf/gfx/CMakeLists.txt
++++ b/laf/gfx/CMakeLists.txt
+@@ -25,6 +25,7 @@ endif()
+ add_library(laf-gfx
+   color_space.cpp
+   hsl.cpp
++  okhsl.cpp
+   hsv.cpp
+   rgb.cpp
+   ${LAF_GFX_EXTRA_SOURCES})
+diff --git a/laf/gfx/okhsl.cpp b/laf/gfx/okhsl.cpp
+new file mode 100644
+index 0000000..4ed4421
+--- /dev/null
++++ b/laf/gfx/okhsl.cpp
+@@ -0,0 +1,58 @@
++// LAF Gfx Library
++// Copyright (c) 2020-2022  Igara Studio S.A.
++// Copyright (c) 2017  David Capello
++//
++// This file is released under the terms of the MIT license.
++// Read LICENSE.txt for more information.
++
++#ifdef HAVE_CONFIG_H
++  #include "config.h"
++#endif
++
++#include "gfx/okhsl.h"
++#include "gfx/oklab.h"
++#include "gfx/rgb.h"
++
++#include <algorithm>
++#include <cmath>
++
++namespace gfx {
++
++using namespace std;
++
++OkHsl::OkHsl(double hue, double saturation, double lightness)
++  : m_hue(hue)
++  , m_saturation(std::clamp(saturation, 0.0, 1.0))
++  , m_lightness(std::clamp(lightness, 0.0, 1.0))
++{
++}
++
++OkHsl::OkHsl(const Rgb& rgb)
++{
++  oklab::HSL okhsl = oklab::srgb_to_okhsl(oklab::RGB{
++    double(rgb.red()) / 255.0, 
++    double(rgb.green()) / 255.0, 
++    double(rgb.blue()) / 255.0
++  });
++
++  m_hue = okhsl.h;
++  m_saturation = okhsl.s;
++  m_lightness = okhsl.l;
++}
++
++int OkHsl::hueInt() const
++{
++  return int(std::floor(m_hue + 0.5));
++}
++
++int OkHsl::saturationInt() const
++{
++  return int(std::floor(m_saturation * 100.0 + 0.5));
++}
++
++int OkHsl::lightnessInt() const
++{
++  return int(std::floor(m_lightness * 100.0 + 0.5));
++}
++
++} // namespace gfx
+diff --git a/laf/gfx/okhsl.h b/laf/gfx/okhsl.h
+new file mode 100644
+index 0000000..8934b85
+--- /dev/null
++++ b/laf/gfx/okhsl.h
+@@ -0,0 +1,73 @@
++// LAF Gfx Library
++// Copyright (c) 2020-2022  Igara Studio S.A.
++// Copyright (c) 2017  David Capello
++//
++// This file is released under the terms of the MIT license.
++// Read LICENSE.txt for more information.
++
++#pragma once
++
++#include <algorithm>
++#include <cmath>
++
++namespace gfx {
++
++class Rgb;
++
++class OkHsl {
++public:
++  OkHsl() : m_hue(0.0), m_saturation(0.0), m_lightness(0.0) {}
++
++  OkHsl(double hue, double saturation, double lightness);
++
++  OkHsl(const OkHsl& okhsl)
++    : m_hue(okhsl.hue())
++    , m_saturation(okhsl.saturation())
++    , m_lightness(okhsl.lightness())
++  {
++  }
++
++  // RGB to HSL conversion
++  explicit OkHsl(const Rgb& rgb);
++
++  // Returns color's hue, a value from 0 to 360
++  double hue() const { return m_hue; }
++
++  // Returns color's saturation, a value from 0 to 100
++  double saturation() const { return m_saturation; }
++
++  // Returns color's lightness, a value from 0 to 100
++  double lightness() const { return m_lightness; }
++
++  // Integer getters, hue=[0,360), saturation=[0,100], value=[0,100]
++  int hueInt() const;
++  int saturationInt() const;
++  int lightnessInt() const;
++
++  void hue(double hue)
++  {
++    while (hue < 0.0)
++      hue += 360.0;
++    m_hue = std::fmod(hue, 360.0);
++  }
++
++  void saturation(double saturation) { m_saturation = std::clamp(saturation, 0.0, 1.0); }
++
++  void lightness(double lightness) { m_lightness = std::clamp(lightness, 0.0, 1.0); }
++
++  // The comparison is done through the integer value of each component.
++  bool operator==(const OkHsl& other) const
++  {
++    return (hueInt() == other.hueInt() && saturationInt() == other.saturationInt() &&
++            lightnessInt() == other.lightnessInt());
++  }
++
++  bool operator!=(const OkHsl& other) const { return !operator==(other); }
++
++private:
++  double m_hue;
++  double m_saturation;
++  double m_lightness;
++};
++
++} // namespace gfx
+diff --git a/laf/gfx/oklab.h b/laf/gfx/oklab.h
+new file mode 100644
+index 0000000..5a5b3b5
+--- /dev/null
++++ b/laf/gfx/oklab.h
+@@ -0,0 +1,364 @@
++// oklab.h
++//
++// Self-contained OKLab / OKHSL <-> sRGB conversion, bidirectional.
++// Ported from the public-domain reference implementation by Björn Ottosson:
++//   https://bottosson.github.io/posts/colorpicker/
++//   https://bottosson.github.io/posts/gamutclipping/
++//
++// This mirrors, function-for-function, the SkSL version used elsewhere in
++// this patch (e.g. for the color-wheel widget), so on-screen previews and
++// the values actually stored/exported are guaranteed to agree.
++//
++// Conventions:
++//  - RGB components are gamma-encoded sRGB in [0, 1].
++//  - Lab.L is in [0, 1]; Lab.a / Lab.b are unbounded (roughly [-0.4, 0.4]
++//    for in-gamut colors).
++//  - HSL.h is in DEGREES [0, 360) to match Aseprite's existing HSV/HSL
++//    convention (see app::Color::fromHsv / fromHsl). HSL.s and HSL.l are
++//    in [0, 1].
++//
++// No dependency beyond <cmath>.
++
++#pragma once
++
++#include <algorithm>
++#include <cmath>
++
++namespace oklab {
++
++struct RGB { double r = 0.0, g = 0.0, b = 0.0; };
++struct Lab { double L = 0.0, a = 0.0, b = 0.0; };
++struct HSL { double h = 0.0, s = 0.0, l = 0.0; }; // h in degrees [0,360)
++
++namespace detail {
++
++constexpr double kPi = 3.14159265358979323846;
++
++inline double cbrt_signed(double x) {
++  return std::copysign(std::cbrt(std::abs(x)), x);
++}
++
++// ---- sRGB transfer function (gamma) ----
++
++inline double srgb_oetf(double c) { // linear -> gamma
++  return c <= 0.0031308 ? 12.92 * c
++                        : 1.055 * std::pow(std::max(c, 0.0), 1.0 / 2.4) - 0.055;
++}
++
++inline double srgb_eotf_inv(double c) { // gamma -> linear
++  return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
++}
++
++// ---- OKLab <-> linear sRGB ----
++
++inline RGB oklab_to_linear_srgb(const Lab& lab) {
++  double l_ = lab.L + 0.3963377774 * lab.a + 0.2158037573 * lab.b;
++  double m_ = lab.L - 0.1055613458 * lab.a - 0.0638541728 * lab.b;
++  double s_ = lab.L - 0.0894841775 * lab.a - 1.2914855480 * lab.b;
++
++  double l = l_ * l_ * l_;
++  double m = m_ * m_ * m_;
++  double s = s_ * s_ * s_;
++
++  return RGB{
++       4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
++      -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
++      -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
++  };
++}
++
++inline Lab linear_srgb_to_oklab(const RGB& c) {
++  double l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
++  double m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
++  double s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
++
++  double l_ = std::cbrt(l);
++  double m_ = std::cbrt(m);
++  double s_ = std::cbrt(s);
++
++  return Lab{
++      0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
++      1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
++      0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
++  };
++}
++
++// ---- toe / toe_inv (perceptual lightness remap used by OKHSL) ----
++
++inline double toe(double x) {
++  const double k1 = 0.206, k2 = 0.03, k3 = (1.0 + k1) / (1.0 + k2);
++  return 0.5 * (k3 * x - k1 +
++                std::sqrt((k3 * x - k1) * (k3 * x - k1) + 4.0 * k2 * k3 * x));
++}
++
++inline double toe_inv(double x) {
++  const double k1 = 0.206, k2 = 0.03, k3 = (1.0 + k1) / (1.0 + k2);
++  return (x * x + k1 * x) / (k3 * (x + k2));
++}
++
++// ---- gamut boundary helpers (a, b here must be a unit vector: a*a+b*b==1) ----
++
++inline double compute_max_saturation(double a, double b) {
++  double k0, k1, k2, k3, k4, wl, wm, ws;
++
++  if (-1.88170328 * a - 0.80936493 * b > 1.0) {
++    k0 = 1.19086277; k1 = 1.76576728; k2 = 0.59662641; k3 = 0.75515197; k4 = 0.56771245;
++    wl = 4.0767416621; wm = -3.3077115913; ws = 0.2309699292;
++  } else if (1.81444104 * a - 1.19445276 * b > 1.0) {
++    k0 = 0.73956515; k1 = -0.45954404; k2 = 0.08285427; k3 = 0.12541070; k4 = 0.14503204;
++    wl = -1.2684380046; wm = 2.6097574011; ws = -0.3413193965;
++  } else {
++    k0 = 1.35733652; k1 = -0.00915799; k2 = -1.15130210; k3 = -0.50559606; k4 = 0.00692167;
++    wl = -0.0041960863; wm = -0.7034186147; ws = 1.7076147010;
++  }
++
++  double S = k0 + k1 * a + k2 * b + k3 * a * a + k4 * a * b;
++
++  double k_l = 0.3963377774 * a + 0.2158037573 * b;
++  double k_m = -0.1055613458 * a - 0.0638541728 * b;
++  double k_s = -0.0894841775 * a - 1.2914855480 * b;
++
++  double l_ = 1.0 + S * k_l, m_ = 1.0 + S * k_m, s_ = 1.0 + S * k_s;
++  double l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
++
++  double l_dS = 3.0 * k_l * (l_ * l_);
++  double m_dS = 3.0 * k_m * (m_ * m_);
++  double s_dS = 3.0 * k_s * (s_ * s_);
++
++  double l_dS2 = 6.0 * (k_l * k_l) * l_;
++  double m_dS2 = 6.0 * (k_m * k_m) * m_;
++  double s_dS2 = 6.0 * (k_s * k_s) * s_;
++
++  double f  = wl * l     + wm * m     + ws * s;
++  double f1 = wl * l_dS  + wm * m_dS  + ws * s_dS;
++  double f2 = wl * l_dS2 + wm * m_dS2 + ws * s_dS2;
++
++  return S - f * f1 / (f1 * f1 - 0.5 * f * f2);
++}
++
++struct LC { double L, C; };
++
++inline LC find_cusp(double a, double b) {
++  double S_cusp = compute_max_saturation(a, b);
++  RGB rgb_at_max = oklab_to_linear_srgb(Lab{1.0, S_cusp * a, S_cusp * b});
++  double L_cusp = cbrt_signed(1.0 / std::max({rgb_at_max.r, rgb_at_max.g, rgb_at_max.b}));
++  return LC{L_cusp, L_cusp * S_cusp};
++}
++
++inline double find_gamut_intersection(double a, double b, double L1, double C1, double L0) {
++  LC cusp = find_cusp(a, b);
++  double t;
++
++  if (((L1 - L0) * cusp.C - (cusp.L - L0) * C1) <= 0.0) {
++    t = cusp.C * L0 / (C1 * cusp.L + cusp.C * (L0 - L1));
++  } else {
++    t = cusp.C * (L0 - 1.0) / (C1 * (cusp.L - 1.0) + cusp.C * (L0 - L1));
++
++    double dL = L1 - L0, dC = C1;
++    double k_l = 0.3963377774 * a + 0.2158037573 * b;
++    double k_m = -0.1055613458 * a - 0.0638541728 * b;
++    double k_s = -0.0894841775 * a - 1.2914855480 * b;
++
++    double l_dt = dL + dC * k_l, m_dt = dL + dC * k_m, s_dt = dL + dC * k_s;
++
++    double L = L0 * (1.0 - t) + t * L1;
++    double C = t * C1;
++
++    double l_ = L + C * k_l, m_ = L + C * k_m, s_ = L + C * k_s;
++    double l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
++
++    double ldt = 3.0 * l_dt * (l_ * l_);
++    double mdt = 3.0 * m_dt * (m_ * m_);
++    double sdt = 3.0 * s_dt * (s_ * s_);
++
++    double ldt2 = 6.0 * (l_dt * l_dt) * l_;
++    double mdt2 = 6.0 * (m_dt * m_dt) * m_;
++    double sdt2 = 6.0 * (s_dt * s_dt) * s_;
++
++    double r  = 4.0767416621 * l    - 3.3077115913 * m    + 0.2309699292 * s    - 1.0;
++    double r1 = 4.0767416621 * ldt  - 3.3077115913 * mdt  + 0.2309699292 * sdt;
++    double r2 = 4.0767416621 * ldt2 - 3.3077115913 * mdt2 + 0.2309699292 * sdt2;
++    double u_r = r1 / (r1 * r1 - 0.5 * r * r2);
++    double t_r = -r * u_r;
++
++    double g  = -1.2684380046 * l    + 2.6097574011 * m    - 0.3413193965 * s    - 1.0;
++    double g1 = -1.2684380046 * ldt  + 2.6097574011 * mdt  - 0.3413193965 * sdt;
++    double g2 = -1.2684380046 * ldt2 + 2.6097574011 * mdt2 - 0.3413193965 * sdt2;
++    double u_g = g1 / (g1 * g1 - 0.5 * g * g2);
++    double t_g = -g * u_g;
++
++    double bb = -0.0041960863 * l    - 0.7034186147 * m    + 1.7076147010 * s    - 1.0;
++    double b1 = -0.0041960863 * ldt  - 0.7034186147 * mdt  + 1.7076147010 * sdt;
++    double b2 = -0.0041960863 * ldt2 - 0.7034186147 * mdt2 + 1.7076147010 * sdt2;
++    double u_b = b1 / (b1 * b1 - 0.5 * bb * b2);
++    double t_b = -bb * u_b;
++
++    const double kMax = std::numeric_limits<double>::max();
++    t_r = u_r >= 0.0 ? t_r : kMax;
++    t_g = u_g >= 0.0 ? t_g : kMax;
++    t_b = u_b >= 0.0 ? t_b : kMax;
++
++    t += std::min({t_r, t_g, t_b});
++  }
++  return t;
++}
++
++struct Cs { double C0, Cmid, Cmax; };
++
++inline Cs get_Cs(double L, double a, double b) {
++  LC cusp = find_cusp(a, b);
++  double C_max = find_gamut_intersection(a, b, L, 1.0, L);
++
++  double S_max = cusp.C / cusp.L;
++  double T_max = cusp.C / (1.0 - cusp.L);
++  double k = C_max / std::min(L * S_max, (1.0 - L) * T_max);
++
++  double C_mid;
++  {
++    double S = 0.11516993 + 1.0 / (
++        7.44778970 + 4.15901240 * b +
++        a * (-2.19557347 + 1.75198401 * b +
++        a * (-2.13704948 - 10.02301043 * b +
++        a * (-4.24894561 + 5.38770819 * b + 4.69891013 * a))));
++
++    double T = 0.11239642 + 1.0 / (
++        1.61320320 - 0.68124379 * b +
++        a * (0.40370612 + 0.90148123 * b +
++        a * (-0.27087943 + 0.61223990 * b +
++        a * (0.00299215 - 0.45399568 * b - 0.14661872 * a))));
++
++    double C_a = L * S, C_b = (1.0 - L) * T;
++    C_mid = 0.9 * k * std::sqrt(std::sqrt(
++        1.0 / (1.0 / (C_a * C_a * C_a * C_a) + 1.0 / (C_b * C_b * C_b * C_b))));
++  }
++
++  double C_0;
++  {
++    double C_a = L * 0.4, C_b = (1.0 - L) * 0.8;
++    C_0 = std::sqrt(1.0 / (1.0 / (C_a * C_a) + 1.0 / (C_b * C_b)));
++  }
++
++  return Cs{C_0, C_mid, C_max};
++}
++
++} // namespace detail
++
++// =======================  Public API  =======================
++
++// ---- direct sRGB <-> linear sRGB (0..1) ----
++
++inline RGB srgb_to_linear(const RGB& c) {
++  return RGB{detail::srgb_eotf_inv(c.r), detail::srgb_eotf_inv(c.g), detail::srgb_eotf_inv(c.b)};
++}
++
++inline RGB linear_to_srgb(const RGB& c) {
++  return RGB{
++      std::clamp(detail::srgb_oetf(c.r), 0.0, 1.0),
++      std::clamp(detail::srgb_oetf(c.g), 0.0, 1.0),
++      std::clamp(detail::srgb_oetf(c.b), 0.0, 1.0),
++  };
++}
++
++// ---- sRGB (gamma, 0..1) <-> OKLab ----
++
++inline Lab srgb_to_oklab(const RGB& c) {
++  return detail::linear_srgb_to_oklab(srgb_to_linear(c));
++}
++
++inline RGB oklab_to_srgb(const Lab& lab) {
++  return linear_to_srgb(detail::oklab_to_linear_srgb(lab));
++}
++
++// ---- OKLab <-> OKHSL ----
++// hsl.h is in DEGREES [0, 360).
++
++inline Lab okhsl_to_oklab(const HSL& hsl) {
++  double h = hsl.h / 360.0;
++  double s = hsl.s;
++  double l = hsl.l;
++
++  double L = detail::toe_inv(l);
++  double a = 0.0, b = 0.0;
++
++  if (L != 0.0 && L != 1.0 && s != 0.0) {
++    double a_ = std::cos(2.0 * detail::kPi * h);
++    double b_ = std::sin(2.0 * detail::kPi * h);
++
++    detail::Cs cs = detail::get_Cs(L, a_, b_);
++    double C0 = cs.C0, Cmid = cs.Cmid, Cmax = cs.Cmax;
++
++    const double mid = 0.8, mid_inv = 1.25;
++    double C, t;
++
++    if (s < mid) {
++      t = mid_inv * s;
++      double k1 = mid * C0;
++      double k2 = 1.0 - k1 / Cmid;
++      C = t * k1 / (1.0 - k2 * t);
++    } else {
++      t = (s - mid) / (1.0 - mid);
++      double k0 = Cmid;
++      double k1 = (1.0 - mid) * Cmid * Cmid * mid_inv * mid_inv / C0;
++      double k2 = 1.0 - k1 / (Cmax - Cmid);
++      C = k0 + t * k1 / (1.0 - k2 * t);
++    }
++
++    a = C * a_;
++    b = C * b_;
++  }
++
++  return Lab{L, a, b};
++}
++
++inline HSL oklab_to_okhsl(const Lab& lab) {
++  double C = std::sqrt(lab.a * lab.a + lab.b * lab.b);
++  double L = lab.L;
++
++  double h = 0.5 + 0.5 * std::atan2(-lab.b, -lab.a) / detail::kPi; // [0,1)
++  double s = 0.0;
++
++  if (C != 0.0) {
++    double a_ = lab.a / C;
++    double b_ = lab.b / C;
++
++    detail::Cs cs = detail::get_Cs(L, a_, b_);
++    double C0 = cs.C0, Cmid = cs.Cmid, Cmax = cs.Cmax;
++
++    const double mid = 0.8, mid_inv = 1.25;
++
++    if (C < Cmid) {
++      double k1 = mid * C0;
++      double k2 = 1.0 - k1 / Cmid;
++      double t = C / (k1 + k2 * C);
++      s = t * mid;
++    } else {
++      double k0 = Cmid;
++      double k1 = (1.0 - mid) * Cmid * Cmid * mid_inv * mid_inv / C0;
++      double k2 = 1.0 - k1 / (Cmax - Cmid);
++      double t = (C - k0) / (k1 + k2 * (C - k0));
++      s = mid + (1.0 - mid) * t;
++    }
++  }
++
++  double l = detail::toe(L);
++
++  // Normalize h to [0, 360) degrees; guard the C==0 (achromatic) case
++  // where atan2(0,0) is well-defined (0) but meaningless — keep it, callers
++  // that care about "no hue" should check s == 0 rather than h.
++  double h_deg = std::fmod(h * 360.0, 360.0);
++  if (h_deg < 0.0) h_deg += 360.0;
++
++  return HSL{h_deg, s, l};
++}
++
++// ---- Convenience: straight sRGB <-> OKHSL ----
++
++inline RGB okhsl_to_srgb(const HSL& hsl) {
++  return oklab_to_srgb(okhsl_to_oklab(hsl));
++}
++
++inline HSL srgb_to_okhsl(const RGB& rgb) {
++  return oklab_to_okhsl(srgb_to_oklab(rgb));
++}
++
++} // namespace oklab
+diff --git a/laf/gfx/rgb.cpp b/laf/gfx/rgb.cpp
+index cad3030..bd7a42b 100644
+--- a/laf/gfx/rgb.cpp
++++ b/laf/gfx/rgb.cpp
+@@ -8,6 +8,8 @@
+ 
+ #include "gfx/hsl.h"
+ #include "gfx/hsv.h"
++#include "gfx/oklab.h"
++#include "gfx/okhsl.h"
+ #include <cmath>
+ 
+ namespace gfx {
+@@ -113,6 +115,18 @@ Rgb::Rgb(const Hsl& hsl)
+   m_blue = int(b * 255.0 + 0.5);
+ }
+ 
++Rgb::Rgb(const OkHsl& okhsl)
++{
++  oklab::RGB rgb = oklab::okhsl_to_srgb(oklab::HSL{
++    okhsl.hue(), 
++    okhsl.saturation(), 
++    okhsl.lightness()
++  });
++  m_red = int(std::clamp(rgb.r, 0.0, 1.0) * 255.0 + 0.5);
++  m_green = int(std::clamp(rgb.g, 0.0, 1.0) * 255.0 + 0.5);
++  m_blue = int(std::clamp(rgb.b, 0.0, 1.0) * 255.0 + 0.5);
++}
++
+ int Rgb::maxComponent() const
+ {
+   if (m_red > m_green)
+diff --git a/laf/gfx/rgb.h b/laf/gfx/rgb.h
+index d156624..29ec16f 100644
+--- a/laf/gfx/rgb.h
++++ b/laf/gfx/rgb.h
+@@ -14,6 +14,7 @@ namespace gfx {
+ 
+ class Hsv;
+ class Hsl;
++class OkHsl;
+ 
+ class Rgb {
+ public:
+@@ -31,6 +32,7 @@ public:
+   // Conversions
+   explicit Rgb(const Hsv& hsv);
+   explicit Rgb(const Hsl& hsl);
++  explicit Rgb(const OkHsl& okhsl);
+ 
+   int red() const { return m_red; }
+ 

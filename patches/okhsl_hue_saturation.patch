@@ -1,0 +1,102 @@
+diff --git a/src/app/commands/filters/cmd_hue_saturation.cpp b/src/app/commands/filters/cmd_hue_saturation.cpp
+index 3c4e2aecae..7931e602f2 100644
+--- a/src/app/commands/filters/cmd_hue_saturation.cpp
++++ b/src/app/commands/filters/cmd_hue_saturation.cpp
+@@ -65,14 +65,16 @@
+     getContainer()->addChild(&m_colorType);
+     getContainer()->addChild(&m_sliders);
+ 
+-    static_assert(int(Mode::HSV_MUL) == 0 && int(Mode::HSL_MUL) == 1 && int(Mode::HSV_ADD) == 2 &&
+-                    int(Mode::HSL_ADD) == 3,
++    static_assert(int(Mode::HSV_MUL) == 0 && int(Mode::HSL_MUL) == 1 && int(Mode::OKHSL_MUL) == 2 &&
++                  int(Mode::HSV_ADD) == 3 && int(Mode::HSL_ADD) == 4 && int(Mode::OKHSL_ADD) == 5,
+                   "Adjust widget showing filters::HueSaturationFilter::Mode enum");
+     auto mode = Preferences::instance().hueSaturation.mode();
+     m_colorType.addItem("HSV")->setFocusStop(false);
+     m_colorType.addItem("HSL")->setFocusStop(false);
++    m_colorType.addItem("OKHSL")->setFocusStop(false);
+     m_colorType.addItem("HSV+")->setFocusStop(false);
+     m_colorType.addItem("HSL+")->setFocusStop(false);
++    m_colorType.addItem("OKHSL+")->setFocusStop(false);
+     m_colorType.setSelectedItem(int(mode));
+     m_colorType.ItemChange.connect([this] { onChangeMode(); });
+ 
+@@ -88,6 +90,7 @@
+ 
+ private:
+   bool isHsl() const { return (mode() == Mode::HSL_MUL || mode() == Mode::HSL_ADD); }
++  bool isOkHsl() const { return (mode() == Mode::OKHSL_MUL || mode() == Mode::OKHSL_ADD); }
+ 
+   void onChangeMode()
+   {
+@@ -95,7 +98,7 @@
+ 
+     Preferences::instance().hueSaturation.mode(mode());
+     m_filter.setMode(mode());
+-    m_sliders.setColorType(isHsl() ? app::Color::HslType : app::Color::HsvType);
++    m_sliders.setColorType(isOkHsl() ? app::Color::OkHslType : isHsl() ? app::Color::HslType : app::Color::HsvType);
+ 
+     onChangeControls();
+   }
+@@ -106,7 +109,14 @@
+ 
+     m_sliders.syncRelHsvHslSliders();
+ 
+-    if (isHsl()) {
++    if (isOkHsl()) {
++      m_filter.setHue(double(m_sliders.getRelSliderValue(ColorSliders::Channel::OkHslHue)));
++      m_filter.setSaturation(m_sliders.getRelSliderValue(ColorSliders::Channel::OkHslSaturation) /
++                             100.0);
++      m_filter.setLightness(m_sliders.getRelSliderValue(ColorSliders::Channel::OkHslLightness) /
++                            100.0);
++    }
++    else if (isHsl()) {
+       m_filter.setHue(double(m_sliders.getRelSliderValue(ColorSliders::Channel::HslHue)));
+       m_filter.setSaturation(m_sliders.getRelSliderValue(ColorSliders::Channel::HslSaturation) /
+                              100.0);
+diff --git a/src/filters/hue_saturation_filter.cpp b/src/filters/hue_saturation_filter.cpp
+index c48a125207..386c0c6faf 100644
+--- a/src/filters/hue_saturation_filter.cpp
++++ b/src/filters/hue_saturation_filter.cpp
+@@ -5,6 +5,7 @@
+ // This program is distributed under the terms of
+ // the End-User License Agreement for Aseprite.
+ 
++#include "gfx/okhsl.h"
+ #ifdef HAVE_CONFIG_H
+   #include "config.h"
+ #endif
+@@ -213,12 +214,18 @@
+     case Mode::HSL_MUL:
+       applyFilterToRgbT<gfx::Hsl, &gfx::Hsl::lightness, &gfx::Hsl::lightness>(target, color, true);
+       break;
++    case Mode::OKHSL_MUL:
++      applyFilterToRgbT<gfx::OkHsl, &gfx::OkHsl::lightness, &gfx::OkHsl::lightness>(target, color, true);
++      break;
+     case Mode::HSV_ADD:
+       applyFilterToRgbT<gfx::Hsv, &gfx::Hsv::value, &gfx::Hsv::value>(target, color, false);
+       break;
+     case Mode::HSL_ADD:
+       applyFilterToRgbT<gfx::Hsl, &gfx::Hsl::lightness, &gfx::Hsl::lightness>(target, color, false);
+       break;
++    case Mode::OKHSL_ADD:
++      applyFilterToRgbT<gfx::OkHsl, &gfx::OkHsl::lightness, &gfx::OkHsl::lightness>(target, color, false);
++      break;
+   }
+ }
+ 
+diff --git a/src/filters/hue_saturation_filter.h b/src/filters/hue_saturation_filter.h
+index fa30b40280..de0bde644d 100644
+--- a/src/filters/hue_saturation_filter.h
++++ b/src/filters/hue_saturation_filter.h
+@@ -20,8 +20,10 @@
+   enum class Mode {
+     HSV_MUL,
+     HSL_MUL,
++    OKHSL_MUL,
+     HSV_ADD,
+     HSL_ADD,
++    OKHSL_ADD,
+   };
+ 
+   HueSaturationFilter();
